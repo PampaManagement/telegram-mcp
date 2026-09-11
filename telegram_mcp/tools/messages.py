@@ -985,15 +985,24 @@ async def get_message_context(
         )
 
 
-async def _forward(cl, to_entity, ids, from_entity, topic_id: Optional[int] = None):
+async def _forward(
+    cl,
+    to_entity,
+    ids,
+    from_entity,
+    topic_id: Optional[int] = None,
+    drop_captions: bool = False,
+):
     """Forward messages, into a forum topic when one is given.
 
     Telethon's ``forward_messages`` helper has no topic argument, so a topic
     forward goes through the raw request with ``top_msg_id`` set. Without a
-    topic the helper is used exactly as before.
+    topic the helper is used exactly as before. ``drop_captions`` strips the
+    media captions on the way, in either path.
     """
     if topic_id is None:
-        await cl.forward_messages(to_entity, ids, from_entity)
+        kwargs = {"drop_media_captions": True} if drop_captions else {}
+        await cl.forward_messages(to_entity, ids, from_entity, **kwargs)
         return
     import random
 
@@ -1005,6 +1014,7 @@ async def _forward(cl, to_entity, ids, from_entity, topic_id: Optional[int] = No
             to_peer=to_entity,
             random_id=[random.randint(0, 2**62) for _ in id_list],
             top_msg_id=int(topic_id),
+            drop_media_captions=True if drop_captions else None,
         )
     )
 
@@ -1025,6 +1035,7 @@ async def forward_message(
     account: str = None,
     expand_album: bool = True,
     topic_id: Optional[int] = None,
+    drop_captions: bool = False,
 ) -> str:
     """
     Forward a message (or several) from a source chat to a destination chat.
@@ -1053,6 +1064,7 @@ async def forward_message(
         topic_id: Forum topic id in the destination supergroup. The forward
             lands in that topic instead of General. Omit for chats without
             topics.
+        drop_captions: Strip the media captions from the forwarded copies.
     """
     try:
         cl = get_client(account)
@@ -1080,7 +1092,7 @@ async def forward_message(
                     ids_to_forward = sibling_ids
                     expanded_from_album = True
 
-        await _forward(cl, to_entity, ids_to_forward, from_entity, topic_id)
+        await _forward(cl, to_entity, ids_to_forward, from_entity, topic_id, drop_captions)
         count = len(ids_to_forward) if isinstance(ids_to_forward, list) else 1
         where = f"{to_chat_id}{_topic_suffix(topic_id)}"
         if count == 1:
@@ -1115,6 +1127,7 @@ async def forward_messages(
     to_chat_id: Union[int, str],
     account: str = None,
     topic_id: Optional[int] = None,
+    drop_captions: bool = False,
 ) -> str:
     """
     Forward a BATCH of messages from a source chat to a destination chat in
@@ -1138,6 +1151,7 @@ async def forward_messages(
         account: Optional account label for multi-account mode.
         topic_id: Forum topic id in the destination supergroup, so the batch
             lands in that topic instead of General.
+        drop_captions: Strip the media captions from the forwarded copies.
     """
     try:
         if not message_ids:
@@ -1145,7 +1159,7 @@ async def forward_messages(
         cl = get_client(account)
         from_entity = await resolve_entity(from_chat_id, cl)
         to_entity = await resolve_entity(to_chat_id, cl)
-        await _forward(cl, to_entity, list(message_ids), from_entity, topic_id)
+        await _forward(cl, to_entity, list(message_ids), from_entity, topic_id, drop_captions)
         return (
             f"{len(message_ids)} messages forwarded from "
             f"{from_chat_id} to {to_chat_id}{_topic_suffix(topic_id)}."
