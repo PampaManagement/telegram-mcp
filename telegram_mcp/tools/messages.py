@@ -985,6 +985,34 @@ async def get_message_context(
         )
 
 
+async def _forward(cl, to_entity, ids, from_entity, topic_id: Optional[int] = None):
+    """Forward messages, into a forum topic when one is given.
+
+    Telethon's ``forward_messages`` helper has no topic argument, so a topic
+    forward goes through the raw request with ``top_msg_id`` set. Without a
+    topic the helper is used exactly as before.
+    """
+    if topic_id is None:
+        await cl.forward_messages(to_entity, ids, from_entity)
+        return
+    import random
+
+    id_list = list(ids) if isinstance(ids, (list, tuple)) else [ids]
+    await cl(
+        functions.messages.ForwardMessagesRequest(
+            from_peer=from_entity,
+            id=[int(i) for i in id_list],
+            to_peer=to_entity,
+            random_id=[random.randint(0, 2**62) for _ in id_list],
+            top_msg_id=int(topic_id),
+        )
+    )
+
+
+def _topic_suffix(topic_id: Optional[int]) -> str:
+    return f" (topic {topic_id})" if topic_id is not None else ""
+
+
 @mcp.tool(
     annotations=ToolAnnotations(title="Forward Message", openWorldHint=True, destructiveHint=True)
 )
@@ -996,6 +1024,7 @@ async def forward_message(
     to_chat_id: Union[int, str],
     account: str = None,
     expand_album: bool = True,
+    topic_id: Optional[int] = None,
 ) -> str:
     """
     Forward a message (or several) from a source chat to a destination chat.
@@ -1021,6 +1050,9 @@ async def forward_message(
         account: Optional account label for multi-account mode.
         expand_album: If True (default) and message_id is a single int, the
             server expands albums automatically. No effect on list inputs.
+        topic_id: Forum topic id in the destination supergroup. The forward
+            lands in that topic instead of General. Omit for chats without
+            topics.
     """
     try:
         cl = get_client(account)
@@ -1048,16 +1080,17 @@ async def forward_message(
                     ids_to_forward = sibling_ids
                     expanded_from_album = True
 
-        await cl.forward_messages(to_entity, ids_to_forward, from_entity)
+        await _forward(cl, to_entity, ids_to_forward, from_entity, topic_id)
         count = len(ids_to_forward) if isinstance(ids_to_forward, list) else 1
+        where = f"{to_chat_id}{_topic_suffix(topic_id)}"
         if count == 1:
-            return f"Message {message_id} forwarded from {from_chat_id} to {to_chat_id}."
+            return f"Message {message_id} forwarded from {from_chat_id} to {where}."
         if expanded_from_album:
             return (
                 f"Album of {count} messages forwarded from {from_chat_id} "
-                f"to {to_chat_id} (auto-expanded from message {message_id})."
+                f"to {where} (auto-expanded from message {message_id})."
             )
-        return f"{count} messages forwarded from {from_chat_id} to {to_chat_id}."
+        return f"{count} messages forwarded from {from_chat_id} to {where}."
     except Exception as e:
         return log_and_format_error(
             "forward_message",
@@ -1065,6 +1098,7 @@ async def forward_message(
             from_chat_id=from_chat_id,
             message_id=message_id,
             to_chat_id=to_chat_id,
+            topic_id=topic_id,
         )
 
 
@@ -1080,6 +1114,7 @@ async def forward_messages(
     message_ids: List[int],
     to_chat_id: Union[int, str],
     account: str = None,
+    topic_id: Optional[int] = None,
 ) -> str:
     """
     Forward a BATCH of messages from a source chat to a destination chat in
@@ -1101,6 +1136,8 @@ async def forward_messages(
             (e.g. [12345, 12346]). Must contain at least one id.
         to_chat_id: Destination chat (id or @username).
         account: Optional account label for multi-account mode.
+        topic_id: Forum topic id in the destination supergroup, so the batch
+            lands in that topic instead of General.
     """
     try:
         if not message_ids:
@@ -1108,8 +1145,11 @@ async def forward_messages(
         cl = get_client(account)
         from_entity = await resolve_entity(from_chat_id, cl)
         to_entity = await resolve_entity(to_chat_id, cl)
-        await cl.forward_messages(to_entity, list(message_ids), from_entity)
-        return f"{len(message_ids)} messages forwarded from " f"{from_chat_id} to {to_chat_id}."
+        await _forward(cl, to_entity, list(message_ids), from_entity, topic_id)
+        return (
+            f"{len(message_ids)} messages forwarded from "
+            f"{from_chat_id} to {to_chat_id}{_topic_suffix(topic_id)}."
+        )
     except Exception as e:
         return log_and_format_error(
             "forward_messages",
@@ -1117,6 +1157,7 @@ async def forward_messages(
             from_chat_id=from_chat_id,
             message_ids=message_ids,
             to_chat_id=to_chat_id,
+            topic_id=topic_id,
         )
 
 
