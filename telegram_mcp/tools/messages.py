@@ -998,10 +998,11 @@ async def _forward(
     Telethon's ``forward_messages`` helper has no topic argument, so a topic
     forward goes through the raw request with ``top_msg_id`` set. Without a
     topic the helper is used exactly as before. ``drop_captions`` strips the
-    media captions on the way, in either path.
+    media captions on the way, in either path. Telegram only honours that
+    together with ``drop_author`` (hide the sender name), so both are set.
     """
     if topic_id is None:
-        kwargs = {"drop_media_captions": True} if drop_captions else {}
+        kwargs = {"drop_media_captions": True, "drop_author": True} if drop_captions else {}
         await cl.forward_messages(to_entity, ids, from_entity, **kwargs)
         return
     import random
@@ -1015,6 +1016,7 @@ async def _forward(
             random_id=[random.randint(0, 2**62) for _ in id_list],
             top_msg_id=int(topic_id),
             drop_media_captions=True if drop_captions else None,
+            drop_author=True if drop_captions else None,
         )
     )
 
@@ -1065,6 +1067,8 @@ async def forward_message(
             lands in that topic instead of General. Omit for chats without
             topics.
         drop_captions: Strip the media captions from the forwarded copies.
+            Telegram only allows that with the sender name hidden, so the
+            "Forwarded from" header goes too.
     """
     try:
         cl = get_client(account)

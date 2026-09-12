@@ -80,12 +80,13 @@ async def test_drop_captions_in_both_paths(monkeypatch):
         topic_id=560, drop_captions=True,
     )
     assert client.requests[0].drop_media_captions is True
+    assert client.requests[0].drop_author is True
 
     await messages.forward_message(
         from_chat_id=-1001, message_id=43, to_chat_id=-1002, expand_album=False,
         drop_captions=True,
     )
-    assert client.helper_calls[0][3] == {"drop_media_captions": True}
+    assert client.helper_calls[0][3] == {"drop_media_captions": True, "drop_author": True}
 
 
 @pytest.mark.asyncio
