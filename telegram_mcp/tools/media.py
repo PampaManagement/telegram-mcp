@@ -430,3 +430,64 @@ __all__ = [
     "get_gif_search",
     "send_gif",
 ]
+
+
+@mcp.tool(annotations=ToolAnnotations(title="Copy Media", openWorldHint=True, destructiveHint=True))
+@with_account(readonly=False)
+@validate_id("from_chat_id", "to_chat_id")
+async def copy_media(
+    from_chat_id: Union[int, str],
+    message_id: int,
+    to_chat_id: Union[int, str],
+    caption: Optional[str] = None,
+    topic_id: Optional[int] = None,
+    account: str = None,
+) -> str:
+    """
+    Re-send the media of an existing message as a brand new message.
+
+    The file is re-used by its existing Telegram reference: nothing is
+    downloaded, nothing is re-uploaded and nothing is re-encoded, so the copy
+    is byte for byte the original. Unlike a forward it carries no "forwarded
+    from" header, so the source chat is never named, and unlike a forward it
+    can be given its own caption.
+
+    Args:
+        from_chat_id: Chat holding the original message.
+        message_id: The original message id.
+        to_chat_id: Where the copy goes.
+        caption: Optional caption for the copy.
+        topic_id: Optional forum topic id in the destination.
+
+    Returns JSON with the new message id.
+    """
+    try:
+        cl = get_client(account)
+        from_entity = await resolve_entity(from_chat_id, cl)
+        to_entity = await resolve_entity(to_chat_id, cl)
+        msg = await cl.get_messages(from_entity, ids=int(message_id))
+        if not msg or not getattr(msg, "media", None):
+            return f"No media on message {message_id} in chat {from_chat_id}."
+        sent = await cl.send_file(
+            to_entity,
+            msg.media,
+            caption=caption,
+            reply_to=int(topic_id) if topic_id else None,
+        )
+        return json.dumps(
+            {
+                "sent": True,
+                "message_id": getattr(sent, "id", None),
+                "chat_id": str(to_chat_id),
+                "topic_id": topic_id,
+            },
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        return log_and_format_error(
+            "copy_media",
+            e,
+            from_chat_id=from_chat_id,
+            message_id=message_id,
+            to_chat_id=to_chat_id,
+        )
