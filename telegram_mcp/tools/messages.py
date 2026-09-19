@@ -1812,19 +1812,32 @@ async def get_message_reactions(
     try:
         cl = get_client(account)
         from telethon.tl.types import ReactionEmoji, ReactionCustomEmoji
+        from telethon.errors.rpcerrorlist import MsgIdInvalidError
 
         peer = await resolve_input_entity(chat_id, cl)
 
-        result = await cl(
-            functions.messages.GetMessageReactionsListRequest(
-                peer=peer,
-                id=message_id,
-                limit=limit,
+        def none_yet():
+            return json.dumps(
+                {"message_id": message_id, "chat_id": str(chat_id), "reactions": [], "count": 0},
+                indent=2,
             )
-        )
+
+        try:
+            result = await cl(
+                functions.messages.GetMessageReactionsListRequest(
+                    peer=peer,
+                    id=message_id,
+                    limit=limit,
+                )
+            )
+        except MsgIdInvalidError:
+            # Telegram answers a message that carries no reactions at all with
+            # MSG_ID_INVALID rather than an empty list. Nobody has reacted yet
+            # is an ordinary answer, not a failure.
+            return none_yet()
 
         if not result.reactions:
-            return f"No reactions on message {message_id} in chat {chat_id}."
+            return none_yet()
 
         reactions_data = []
         for reaction in result.reactions:

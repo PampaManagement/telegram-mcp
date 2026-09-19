@@ -699,7 +699,12 @@ def log_and_format_error(
                     break
 
         prefix_str = prefix.value if isinstance(prefix, ErrorCategory) else (prefix or "GEN")
-        error_code = f"{prefix_str}-ERR-{abs(hash(function_name)) % 1000:03d}"
+        # A stable code: Python randomises str hashing per process, so
+        # hash() gave the same failure a different code after every
+        # restart, which makes a code impossible to match on or to
+        # look up in an older log.
+        digest = hashlib.md5(function_name.encode("utf-8")).hexdigest()
+        error_code = f"{prefix_str}-ERR-{int(digest, 16) % 1000:03d}"
 
     # Format the additional context parameters
     context = ", ".join(f"{k}={v}" for k, v in kwargs.items())
