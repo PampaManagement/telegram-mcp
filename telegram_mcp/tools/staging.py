@@ -18,9 +18,16 @@ the secret to whoever the link is given to.
 
 The token in the path is the only thing protecting it, so it is long, random
 and short lived, and it names nothing about the chat it came from.
+
+The inbox is the same road the other way. A caller elsewhere POSTs a file to
+/inbox (through the gateway, so behind its secret) and gets a token back, then
+calls send_staged_file with that token to send the file into a chat or a forum
+topic. No bytes go through the MCP call here either. An inbox file lives no
+longer than a staged one and is deleted as soon as it has been sent.
 """
 
 import os
+import re
 import secrets
 import time
 from pathlib import Path
@@ -37,6 +44,8 @@ _STAGED: Dict[str, Dict[str, Any]] = {}
 
 DEFAULT_TTL_MINUTES = 120
 MAX_TTL_MINUTES = 24 * 60
+# Telegram's own limit for one file on an ordinary account.
+MAX_INBOX_BYTES = int(os.getenv("MEDIA_INBOX_MAX_BYTES", str(2000 * 1024 * 1024)))
 
 
 def _staging_dir() -> Path:
@@ -190,4 +199,127 @@ async def serve_staged(request: Request):
     )
 
 
-__all__ = ["stage_media", "unstage_media"]
+def _clean_filename(name: str) -> str:
+    name = os.path.basename(str(name or "")).strip()
+    name = re.sub(r"[^A-Za-z0-9._ ()-]+", "_", name)[:120].strip(" .")
+    return name or "file.bin"
+
+
+@mcp.custom_route("/inbox", methods=["POST"])
+async def receive_inbox(request: Request):
+    """
+    Take a file from a caller that is not on this machine, for send_staged_file.
+
+    The body is the file itself; ?filename= names it as it will appear in
+    Telegram. Answers with the token send_staged_file takes. Reached only
+    through the gateway, so only by callers holding its secret.
+    """
+    _sweep()
+    filename = _clean_filename(request.query_params.get("filename", ""))
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > MAX_INBOX_BYTES:
+        return JSONResponse({"error": "file too large"}, status_code=413)
+    token = secrets.token_hex(16)
+    # The token names the file on disk; the name the caller gave is kept apart.
+    path = _staging_dir() / f"inbox-{token}{Path(filename).suffix.lower()[:10]}"
+    size = 0
+    try:
+        with open(path, "wb") as handle:
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > MAX_INBOX_BYTES:
+                    raise ValueError("too large")
+                handle.write(chunk)
+    except ValueError:
+        path.unlink(missing_ok=True)
+        return JSONResponse({"error": "file too large"}, status_code=413)
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
+    if size == 0:
+        path.unlink(missing_ok=True)
+        return JSONResponse({"error": "empty body"}, status_code=400)
+    expires = time.time() + DEFAULT_TTL_MINUTES * 60
+    _STAGED[token] = {
+        "path": path,
+        "expires": expires,
+        "content_type": request.headers.get("content-type") or mimetypes.guess_type(filename)[0]
+        or "application/octet-stream",
+        "filename": filename,
+        "inbox": True,
+    }
+    return JSONResponse(
+        {
+            "token": token,
+            "filename": filename,
+            "size": size,
+            "expires_at": datetime.fromtimestamp(expires, tz=timezone.utc).isoformat(),
+        }
+    )
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(title="Send Staged File", openWorldHint=True, destructiveHint=True)
+)
+@with_account(readonly=False)
+@validate_id("chat_id")
+async def send_staged_file(
+    chat_id: Union[int, str],
+    token: str,
+    caption: Optional[str] = None,
+    reply_to: Optional[int] = None,
+    account: str = None,
+) -> str:
+    """
+    Send a file a caller put in the inbox (POST /inbox) as a document.
+
+    The file keeps the name it was given at the inbox and is sent as a
+    document, so it arrives byte for byte, never recompressed. It is deleted
+    once sent.
+
+    Args:
+        chat_id: The chat ID or username.
+        token: The token /inbox answered with.
+        caption: Optional caption.
+        reply_to: A forum topic id to post into that topic, or a message id to reply to it.
+
+    Returns JSON with the new message id.
+    """
+    _sweep()
+    token = str(token).strip()
+    item = _STAGED.get(token)
+    if not item or not item.get("inbox") or not Path(item["path"]).exists():
+        return "No inbox file with that token."
+    try:
+        cl = get_client(account)
+        entity = await resolve_entity(chat_id, cl)
+        handle = await cl.upload_file(str(item["path"]), file_name=item["filename"])
+        sent = await cl.send_file(
+            entity,
+            handle,
+            caption=caption,
+            reply_to=int(reply_to) if reply_to else None,
+            force_document=True,
+        )
+        message_id = getattr(sent, "id", None)
+        if message_id is None:
+            return f"Send of {item['filename']} returned no message."
+        _STAGED.pop(token, None)
+        Path(item["path"]).unlink(missing_ok=True)
+        return json.dumps(
+            {
+                "sent": True,
+                "message_id": message_id,
+                "chat_id": str(chat_id),
+                "reply_to": reply_to,
+                "filename": item["filename"],
+            },
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        return log_and_format_error(
+            "send_staged_file", e, chat_id=chat_id, token=token, reply_to=reply_to
+        )
+
+
+__all__ = ["stage_media", "unstage_media", "send_staged_file"]
