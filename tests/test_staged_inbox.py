@@ -127,3 +127,43 @@ async def test_an_unknown_token_or_a_downloaded_file_cannot_be_sent(monkeypatch,
     staging._STAGED["abc"] = {"path": downloaded, "expires": 9e18, "content_type": "video/mp4", "filename": "abc.mp4"}
     assert await staging.send_staged_file(chat_id=-1001, token="abc") == "No inbox file with that token."
     assert client.sends == []
+
+
+class EditClient(Client):
+    def __init__(self, out=True, media=True):
+        super().__init__()
+        self.out, self.media = out, media
+        self.edits = []
+
+    async def get_messages(self, entity, ids=None):
+        return SimpleNamespace(id=ids, out=self.out, media=SimpleNamespace() if self.media else None,
+                               message="(16)\nRaw clip: IMG_7299.MOV", entities=None)
+
+    async def edit_message(self, entity, message_id, text=None, formatting_entities=None, file=None, force_document=False):
+        self.edits.append({"id": message_id, "text": text, "name": file.name, "force_document": force_document})
+        return SimpleNamespace(id=message_id)
+
+
+@pytest.mark.asyncio
+async def test_edit_staged_file_swaps_the_file_of_its_own_message_keeping_the_caption(monkeypatch, tmp_path):
+    client = EditClient()
+    http = _wire(monkeypatch, tmp_path, client)
+    token = http.post("/inbox?filename=daisy-16.mp4", content=b"new clip").json()["token"]
+
+    answer = json.loads(await staging.edit_staged_file(chat_id=-1001, message_id=4201, token=token))
+
+    assert answer["edited"] is True and answer["message_id"] == 4201
+    assert client.edits == [{"id": 4201, "text": "(16)\nRaw clip: IMG_7299.MOV", "name": "daisy-16.mp4", "force_document": True}]
+    assert token not in staging._STAGED
+
+
+@pytest.mark.asyncio
+async def test_edit_staged_file_never_touches_someone_elses_message(monkeypatch, tmp_path):
+    client = EditClient(out=False)
+    http = _wire(monkeypatch, tmp_path, client)
+    token = http.post("/inbox?filename=x.mp4", content=b"x").json()["token"]
+
+    answer = await staging.edit_staged_file(chat_id=-1001, message_id=4199, token=token)
+
+    assert "not sent by this account" in answer and client.edits == []
+    assert token in staging._STAGED

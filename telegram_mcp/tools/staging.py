@@ -322,4 +322,65 @@ async def send_staged_file(
         )
 
 
-__all__ = ["stage_media", "unstage_media", "send_staged_file"]
+@mcp.tool(
+    annotations=ToolAnnotations(title="Replace Message File", openWorldHint=True, destructiveHint=True)
+)
+@with_account(readonly=False)
+@validate_id("chat_id")
+async def edit_staged_file(
+    chat_id: Union[int, str],
+    message_id: int,
+    token: str,
+    account: str = None,
+) -> str:
+    """
+    Put a file a caller put in the inbox (POST /inbox) in the place of the file of one of this account's own
+    messages: the same message, the same id, the same place in the chat, its caption kept exactly. The file goes as a
+    document, byte for byte. Only a message this account sent, holding a file, can be changed. The inbox file is
+    deleted once it is in.
+
+    Args:
+        chat_id: The chat ID or username.
+        message_id: The id of this account's own message whose file is replaced.
+        token: The token /inbox answered with.
+
+    Returns JSON with the message id.
+    """
+    _sweep()
+    token = str(token).strip()
+    item = _STAGED.get(token)
+    if not item or not item.get("inbox") or not Path(item["path"]).exists():
+        return "No inbox file with that token."
+    try:
+        cl = get_client(account)
+        entity = await resolve_entity(chat_id, cl)
+        old = await cl.get_messages(entity, ids=int(message_id))
+        if old is None:
+            return f"Message {message_id} not found."
+        if not getattr(old, "out", False):
+            return f"Message {message_id} was not sent by this account: its file cannot be replaced."
+        if getattr(old, "media", None) is None:
+            return f"Message {message_id} holds no file to replace."
+        handle = await cl.upload_file(str(item["path"]), file_name=item["filename"])
+        edited = await cl.edit_message(
+            entity,
+            int(message_id),
+            text=getattr(old, "message", None) or "",
+            formatting_entities=getattr(old, "entities", None) or [],
+            file=handle,
+            force_document=True,
+        )
+        if edited is None:
+            return f"Telegram did not change message {message_id}."
+        _STAGED.pop(token, None)
+        Path(item["path"]).unlink(missing_ok=True)
+        return json.dumps(
+            {"edited": True, "message_id": getattr(edited, "id", int(message_id)), "chat_id": str(chat_id),
+             "filename": item["filename"]},
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        return log_and_format_error("edit_staged_file", e, chat_id=chat_id, message_id=message_id, token=token)
+
+
+__all__ = ["stage_media", "unstage_media", "send_staged_file", "edit_staged_file"]
